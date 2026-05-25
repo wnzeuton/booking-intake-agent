@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, time
 from typing import Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +52,22 @@ class BookingRequest(BaseModel):
     source_channel: Literal["email", "form"]
     raw_message_id: Optional[int] = None
     notes: Optional[str] = None
+
+    @field_validator("customer_email", mode="before")
+    @classmethod
+    def empty_email_to_none(cls, v):
+        """Coerce empty string → None so EmailStr validation doesn't reject it."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @field_validator("customer_name", "pet_name", mode="before")
+    @classmethod
+    def required_str_not_empty(cls, v):
+        """Reject empty or whitespace-only strings for required name fields."""
+        if isinstance(v, str) and not v.strip():
+            raise ValueError("field is required and cannot be empty")
+        return v
 
 
 class BookingRecord(BookingRequest):
