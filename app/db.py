@@ -32,6 +32,73 @@ async def acquire() -> AsyncIterator[Connection]:
         yield conn
 
 
+# ---------------------------------------------------------------------------
+# Connection-explicit variants (used by agent tools running in threads,
+# where the global pool's event loop may differ from the calling loop)
+# ---------------------------------------------------------------------------
+
+async def upsert_customer_conn(conn, *, name: str, email, phone, channel: str) -> int:
+    row = await conn.fetchrow(
+        """
+        INSERT INTO customers (name, email, phone, channel)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (email) DO UPDATE
+            SET name = EXCLUDED.name,
+                phone = COALESCE(EXCLUDED.phone, customers.phone),
+                channel = EXCLUDED.channel
+        RETURNING id
+        """,
+        name, email, phone, channel,
+    )
+    return row["id"]
+
+
+async def upsert_pet_conn(conn, *, customer_id: int, name: str,
+                          breed=None, preferred_service=None, notes=None) -> int:
+    row = await conn.fetchrow(
+        """
+        INSERT INTO pets (customer_id, name, breed, preferred_service, notes)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (customer_id, name) DO UPDATE
+            SET breed = COALESCE(EXCLUDED.breed, pets.breed),
+                preferred_service = COALESCE(EXCLUDED.preferred_service, pets.preferred_service),
+                notes = COALESCE(EXCLUDED.notes, pets.notes)
+        RETURNING id
+        """,
+        customer_id, name, breed, preferred_service, notes,
+    )
+    return row["id"]
+
+
+async def create_booking_conn(conn, request, *, customer_id: int, pet_id: int) -> int:
+    row = await conn.fetchrow(
+        """
+        INSERT INTO bookings
+            (customer_id, pet_id, service, requested_date, requested_time,
+             status, source_channel, raw_message_id)
+        VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7)
+        RETURNING id
+        """,
+        customer_id, pet_id, request.service, request.requested_date,
+        request.requested_time, request.source_channel, request.raw_message_id,
+    )
+    return row["id"]
+
+
+async def get_booking_conn(conn, booking_id: int):
+    row = await conn.fetchrow(
+        """
+        SELECT b.*, c.name AS customer_name, c.email AS customer_email, p.name AS pet_name
+        FROM bookings b
+        JOIN customers c ON c.id = b.customer_id
+        JOIN pets      p ON p.id = b.pet_id
+        WHERE b.id = $1
+        """,
+        booking_id,
+    )
+    return dict(row) if row else None
+
+
 async def close_pool() -> None:
     global _pool
     if _pool:
