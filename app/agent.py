@@ -82,6 +82,52 @@ def _get_llm():
 
 
 # ---------------------------------------------------------------------------
+# JSON parsing helper — handles LLM output quirks
+# ---------------------------------------------------------------------------
+
+def _parse_tool_json(raw: str) -> dict:
+    """
+    Parse JSON from a tool input string, handling common LLM output quirks:
+    - Missing outer braces
+    - Outer single-quotes acting as delimiters
+    - Truncated closing quote on last value
+
+    Strategy: try json.loads first, then fall back to regex key-value extraction.
+    """
+    import re
+
+    s = raw.strip()
+
+    def _clean(d: dict) -> dict:
+        """Strip stray single-quotes the model wraps around values."""
+        return {k: v.strip("'").strip() if isinstance(v, str) else v for k, v in d.items()}
+
+    # 1. Try direct parse (happy path)
+    for candidate in [s, "{" + s + "}", s.strip("'").strip('"')]:
+        try:
+            return _clean(json.loads(candidate))
+        except json.JSONDecodeError:
+            pass
+
+    # 2. Regex fallback — extract all "key": "value" or "key": value pairs
+    #    Works even if the outer braces/quotes are malformed
+    result = {}
+    # Match "key": "string value" — strip any inner single quotes from values
+    for m in re.finditer(r'"?(\w+)"?\s*:\s*"([^"]*)"?', s):
+        result[m.group(1)] = m.group(2).strip("'").strip()
+    # Also catch "key": non-string (numbers, booleans, unquoted values)
+    for m in re.finditer(r'"?(\w+)"?\s*:\s*([^",}\s][^,}]*)', s):
+        if m.group(1) not in result:
+            result[m.group(1)] = m.group(2).strip().strip("'").strip('"')
+
+    if result:
+        log.info("tool_json_regex_fallback", extracted=result)
+        return result
+
+    raise ValueError(f"Could not parse tool input as JSON: {raw!r}")
+
+
+# ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
@@ -137,28 +183,49 @@ def create_draft_booking(booking_json: str) -> str:
     Returns the new booking_id as a string.
     IMPORTANT: Only call this when requested_date is known with high confidence.
     """
-    data = json.loads(booking_json)
-    request = BookingRequest(**data)
+    data = _parse_tool_json(booking_json)
+    log.info("create_draft_booking_parsed", data=data)
+    try:
+        request = BookingRequest(**data)
+    except Exception as exc:
+        missing = [str(e["loc"][0]) for e in exc.errors()] if hasattr(exc, "errors") else [str(exc)]
+        to = data.get("customer_email") or data.get("customer_name") or "the customer"
+        name = data.get("customer_name") or "there"
+        missing_desc = " and ".join(missing).replace("_", " ")
+        return (
+            f"ERROR: Cannot create booking — {missing_desc} is required but missing. "
+            f"You MUST call send_clarification_email now with this exact input: "
+            f'{{\"to\": \"{to}\", \"customer_name\": \"{name}\", \"missing_field\": \"{missing_desc}\"}}'
+        )
 
     async def _write():
-        customer_id = await db.upsert_customer(
-            name=request.customer_name,
-            email=str(request.customer_email) if request.customer_email else None,
-            phone=None,
-            channel=request.source_channel,
-        )
-        pet_id = await db.upsert_pet(
-            customer_id=customer_id,
-            name=request.pet_name,
-        )
-        booking_id = await db.create_booking(
-            request, customer_id=customer_id, pet_id=pet_id
-        )
-        return booking_id
+        # Use a fresh connection per call — asyncpg pools are tied to their
+        # event loop and _run_async creates a new loop each time.
+        import asyncpg as _asyncpg
+        conn = await _asyncpg.connect(dsn=os.environ["DATABASE_URL"])
+        try:
+            customer_id = await db.upsert_customer_conn(
+                conn,
+                name=request.customer_name,
+                email=str(request.customer_email) if request.customer_email else None,
+                phone=None,
+                channel=request.source_channel,
+            )
+            pet_id = await db.upsert_pet_conn(
+                conn,
+                customer_id=customer_id,
+                name=request.pet_name,
+            )
+            booking_id = await db.create_booking_conn(conn, request,
+                                                       customer_id=customer_id,
+                                                       pet_id=pet_id)
+            return booking_id
+        finally:
+            await conn.close()
 
     booking_id = _run_async(_write())
     log.info("draft_booking_created", booking_id=booking_id)
-    return str(booking_id)
+    return f"Booking created successfully. booking_id={booking_id}. Now call notify_owners with this booking_id."
 
 
 @tool
@@ -168,9 +235,24 @@ def notify_owners(booking_id: str) -> str:
     Input: booking_id as a string.
     Returns 'sent' on success.
     """
-    booking = _run_async(db.get_booking(int(booking_id)))
+    # Parse booking_id — model may pass "booking_id=3" or just "3"
+    import re as _re
+    match = _re.search(r'\d+', str(booking_id))
+    if not match:
+        return f"Error: could not parse booking_id from {booking_id!r}"
+    bid = int(match.group())
+
+    async def _fetch():
+        import asyncpg as _asyncpg
+        conn = await _asyncpg.connect(dsn=os.environ["DATABASE_URL"])
+        try:
+            return await db.get_booking_conn(conn, bid)
+        finally:
+            await conn.close()
+
+    booking = _run_async(_fetch())
     if not booking:
-        return f"Error: booking {booking_id} not found"
+        return f"Error: booking {bid} not found"
 
     owner_email = os.environ["OWNER_EMAIL"]
     email_client.send_booking_confirmation_request(
@@ -182,7 +264,7 @@ def notify_owners(booking_id: str) -> str:
         requested_date=str(booking["requested_date"]),
         requested_time=str(booking["requested_time"]) if booking.get("requested_time") else None,
     )
-    return "sent"
+    return f"DONE. Owner notified about booking #{bid}. No further actions needed. Output your Final Answer now."
 
 
 @tool
@@ -193,18 +275,16 @@ def send_clarification_email(args_json: str) -> str:
     Only call this once per intake — do not loop.
     Returns 'sent' on success.
     """
-    args = json.loads(args_json)
+    args = _parse_tool_json(args_json)
     email_client.send_clarification_email(
         to=args["to"],
         customer_name=args["customer_name"],
         missing_field=args["missing_field"],
     )
-    return "sent"
+    return "DONE. Clarification email sent. Do not call any more tools. Output your Final Answer now."
 
 
 TOOLS = [
-    lookup_customer,
-    check_availability,
     create_draft_booking,
     notify_owners,
     send_clarification_email,
@@ -225,12 +305,14 @@ Available tools: {tool_names}
 
 Use this exact format — do not deviate:
 Thought: <your reasoning>
-Action: <tool name, exactly as listed>
+Action: <tool name, exactly as listed — never "None" or any other value>
 Action Input: <tool input>
 Observation: <tool result>
 ... (repeat Thought/Action/Action Input/Observation as needed)
 Thought: I now know the final answer
 Final Answer: <summary of what you did>
+
+IMPORTANT: Every Action must be one of the listed tool names. Never write "Action: None" or "Action: thinking" — put your reasoning in the Thought line only.
 
 Begin!
 
@@ -299,9 +381,10 @@ async def run_intake(
         f"source_channel=\"{source_channel}\"\n"
         f"   Optional: requested_time (HH:MM), notes\n"
         f"   Extract all values from the message above. Resolve relative dates using today.\n"
-        f"   If requested_date is truly unknown, call send_clarification_email instead "
-        f"(JSON: {{\"to\": \"<email>\", \"customer_name\": \"<name>\", "
-        f"\"missing_field\": \"the booking date\"}}) and stop.\n"
+        f"   If customer_name, pet_name, or requested_date are missing or unknown, do NOT "
+        f"pass empty strings — call send_clarification_email instead "
+        f"(JSON: {{\"to\": \"<email or '{sender_email or ''}'\", \"customer_name\": \"<name or 'there'>\", "
+        f"\"missing_field\": \"<describe what's missing>\"}}) and stop.\n"
         f"2. call notify_owners — input is the booking_id string returned by create_draft_booking.\n"
         f"Do not call any other tools. Do not try to extract data as a tool call — "
         f"read the message and construct the JSON yourself."
@@ -314,7 +397,7 @@ async def run_intake(
         tools=TOOLS,
         verbose=True,
         handle_parsing_errors=True,
-        max_iterations=10,
+        max_iterations=6,  # create_draft_booking + notify_owners + Final Answer + slack
     )
 
     try:
