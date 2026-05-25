@@ -1,10 +1,17 @@
 -- booking-intake-agent: source-of-truth DB schema
 -- Apply with: psql $DATABASE_URL -f sql/schema.sql
 
+-- Generic key-value store for app state (e.g. gmail_history_id)
+CREATE TABLE IF NOT EXISTS app_state (
+    key        VARCHAR(100) PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS customers (
     id          SERIAL PRIMARY KEY,
     name        VARCHAR(100) NOT NULL,
-    email       VARCHAR(150),
+    email       VARCHAR(150) UNIQUE,
     phone       VARCHAR(20),
     channel     VARCHAR(20),          -- 'email' | 'form'
     created_at  TIMESTAMP DEFAULT NOW()
@@ -17,7 +24,8 @@ CREATE TABLE IF NOT EXISTS pets (
     breed              VARCHAR(100),
     preferred_service  VARCHAR(100),  -- e.g. 'grooming', 'boarding', 'daycare'
     notes              TEXT,
-    created_at         TIMESTAMP DEFAULT NOW()
+    created_at         TIMESTAMP DEFAULT NOW(),
+    UNIQUE (customer_id, name)
 );
 
 CREATE TABLE IF NOT EXISTS messages (

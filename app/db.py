@@ -168,9 +168,21 @@ async def create_booking(request: BookingRequest, *, customer_id: int, pet_id: i
 
 
 async def get_booking(booking_id: int) -> Optional[dict]:
+    """Return booking row joined with customer name and pet name."""
     async with acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT * FROM bookings WHERE id = $1", booking_id
+            """
+            SELECT
+                b.*,
+                c.name  AS customer_name,
+                c.email AS customer_email,
+                p.name  AS pet_name
+            FROM bookings b
+            JOIN customers c ON c.id = b.customer_id
+            JOIN pets      p ON p.id = b.pet_id
+            WHERE b.id = $1
+            """,
+            booking_id,
         )
         return dict(row) if row else None
 
@@ -220,4 +232,31 @@ async def resolve_conversation(conversation_id: int) -> None:
         await conn.execute(
             "UPDATE conversations SET status = 'resolved' WHERE id = $1",
             conversation_id,
+        )
+
+
+# ---------------------------------------------------------------------------
+# App state (generic key-value)
+# ---------------------------------------------------------------------------
+
+async def get_state(key: str) -> Optional[str]:
+    async with acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT value FROM app_state WHERE key = $1", key
+        )
+        return row["value"] if row else None
+
+
+async def set_state(key: str, value: str) -> None:
+    async with acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO app_state (key, value, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (key) DO UPDATE
+                SET value = EXCLUDED.value,
+                    updated_at = NOW()
+            """,
+            key,
+            value,
         )
