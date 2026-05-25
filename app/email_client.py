@@ -11,6 +11,7 @@ from typing import Optional
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 import structlog
 
 log = structlog.get_logger()
@@ -66,8 +67,19 @@ def fetch_new_messages(history_id: str, user_id: str = "me") -> list[dict]:
     for record in history.get("history", []):
         for added in record.get("messagesAdded", []):
             msg_id = added["message"]["id"]
-            msg = service.users().messages().get(userId=user_id, id=msg_id, format="full").execute()
-            messages.append(_parse_message(msg))
+            try:
+                msg = (
+                    service.users()
+                    .messages()
+                    .get(userId=user_id, id=msg_id, format="full")
+                    .execute()
+                )
+                messages.append(_parse_message(msg))
+            except HttpError as exc:
+                if exc.resp.status == 404:
+                    log.warning("gmail_message_not_found", msg_id=msg_id)
+                else:
+                    raise
 
     return messages
 
