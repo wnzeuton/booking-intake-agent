@@ -115,7 +115,12 @@ def _extract_body(payload: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def send_email(*, to: str, subject: str, body: str, user_id: str = "me") -> str:
-    """Send a plain-text email via Gmail API. Returns the sent message id."""
+    """Send a plain-text email via Gmail API. Returns the sent message id.
+    Set DRY_RUN=1 to log instead of sending — safe for testing with real customer emails.
+    """
+    if os.environ.get("DRY_RUN"):
+        log.info("email_dry_run", to=to, subject=subject, body=body)
+        return "dry-run-no-msg-id"
     service = _get_service()
     mime = MIMEText(body)
     mime["to"] = to
