@@ -21,10 +21,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-# Point Ollama at localhost (not host.docker.internal — we're running on the host now)
-# host.docker.internal only resolves inside Docker — force localhost when running on host
-os.environ["LLAMA_ENDPOINT"] = "http://localhost:11434"
 os.environ["DRY_RUN"] = "1"  # never send real emails during agent testing
+# ANTHROPIC_API_KEY is loaded from .env above; verify it was set
+if not os.environ.get("ANTHROPIC_API_KEY"):
+    print("ERROR: ANTHROPIC_API_KEY not set in .env")
+    sys.exit(1)
 os.environ.setdefault("OWNER_EMAIL", "test@example.com")
 os.environ.setdefault("GINGR_API_KEY", "fake")
 # Override DB URL: Docker internal hostname 'postgres' → localhost for host runs
