@@ -43,7 +43,7 @@ class BookingRequest(BaseModel):
     Structured booking extracted by the agent.
     This is what the agent *must* produce before creating a draft booking.
     """
-    customer_name: str
+    customer_name: Optional[str] = None
     customer_email: Optional[EmailStr] = None
     pet_name: str
     service: str
@@ -61,10 +61,18 @@ class BookingRequest(BaseModel):
             return None
         return v
 
-    @field_validator("customer_name", "pet_name", mode="before")
+    @field_validator("customer_name", mode="before")
     @classmethod
-    def required_str_not_empty(cls, v):
-        """Reject empty or whitespace-only strings for required name fields."""
+    def customer_name_empty_to_none(cls, v):
+        """Coerce empty string → None so the field stays optional."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @field_validator("pet_name", mode="before")
+    @classmethod
+    def pet_name_not_empty(cls, v):
+        """Reject empty or whitespace-only strings for pet name."""
         if isinstance(v, str) and not v.strip():
             raise ValueError("field is required and cannot be empty")
         return v

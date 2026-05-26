@@ -54,11 +54,11 @@ def _get_llm() -> ChatAnthropic:
 
 @tool
 def create_draft_booking(
-    customer_name: str,
     pet_name: str,
     service: str,
     requested_date: str,
     source_channel: str,
+    customer_name: Optional[str] = None,
     customer_email: Optional[str] = None,
     requested_time: Optional[str] = None,
     notes: Optional[str] = None,
@@ -68,6 +68,7 @@ def create_draft_booking(
     - requested_date: ISO 8601 date string (YYYY-MM-DD). Resolve relative dates
       like "tomorrow" or "next Friday" using today's date from the system prompt.
     - source_channel: must be 'email' or 'form'.
+    - customer_name: optional if customer_email is known.
     - Only call this when requested_date is known with high confidence.
     Returns: the new booking_id as a string.
     """
@@ -76,7 +77,7 @@ def create_draft_booking(
              service=service, requested_date=requested_date)
     try:
         request = BookingRequest(
-            customer_name=customer_name,
+            customer_name=customer_name or None,
             customer_email=customer_email or None,
             pet_name=pet_name,
             service=service,
@@ -200,10 +201,11 @@ You are a booking intake agent for a pet store. Your job is to extract a structu
 booking request from the inbound message and record it for owner approval.
 
 Decision rules (follow in order):
-1. If customer_name, pet_name, or requested_date are missing or impossible to resolve, \
+1. If pet_name or requested_date are missing or impossible to resolve, \
    call send_clarification_email — then stop.
-2. If all required fields are present, call create_draft_booking then notify_owners.
-3. Never call any tool more than once.
+2. customer_name is optional — if you have the customer's email, proceed without a name.
+3. If all required fields are present, call create_draft_booking then notify_owners.
+4. Never call any tool more than once.
 
 Date resolution — RESOLVE these, do NOT ask for clarification:
 - "tomorrow", "today" → offset from today's date

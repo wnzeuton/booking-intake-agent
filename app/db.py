@@ -37,7 +37,17 @@ async def acquire() -> AsyncIterator[Connection]:
 # where the global pool's event loop may differ from the calling loop)
 # ---------------------------------------------------------------------------
 
-async def upsert_customer_conn(conn, *, name: str, email, phone, channel: str) -> int:
+def _derive_name(name: Optional[str], email) -> str:
+    """Return a display name, falling back to the email prefix if name is blank."""
+    if name and name.strip():
+        return name.strip()
+    if email:
+        return str(email).split("@")[0]
+    return "Unknown"
+
+
+async def upsert_customer_conn(conn, *, name: Optional[str], email, phone, channel: str) -> int:
+    name = _derive_name(name, email)
     row = await conn.fetchrow(
         """
         INSERT INTO customers (name, email, phone, channel)
@@ -157,9 +167,10 @@ async def find_customer_by_email(email: str) -> Optional[dict]:
 
 
 async def upsert_customer(
-    *, name: str, email: Optional[str], phone: Optional[str], channel: str
+    *, name: Optional[str], email: Optional[str], phone: Optional[str], channel: str
 ) -> int:
     """Insert or update customer by email; returns customer id."""
+    name = _derive_name(name, email)
     async with acquire() as conn:
         row = await conn.fetchrow(
             """
