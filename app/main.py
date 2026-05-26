@@ -55,8 +55,16 @@ async def health():
 # POST /webhook/email  — Gmail push notification (Pub/Sub)
 # ---------------------------------------------------------------------------
 
+ALLOWED_SUBJECTS = {"test appointment"}  # lowercase — add more as needed
+
+
 async def _process_email_message(msg: dict):
     """Background task: run the agent on a single inbound email message."""
+    subject = msg.get("subject", "").strip().lower()
+    if subject not in ALLOWED_SUBJECTS:
+        log.info("email_skipped_subject", subject=msg.get("subject", ""))
+        return
+
     sender = msg.get("sender", "")
     if "<" in sender:
         sender_email = sender.split("<")[1].rstrip(">").strip()
