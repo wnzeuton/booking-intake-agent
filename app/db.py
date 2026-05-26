@@ -116,20 +116,32 @@ async def insert_message(
     channel: str,
     body: str,
     direction: str = "inbound",
+    thread_id: Optional[str] = None,
 ) -> int:
     async with acquire() as conn:
         row = await conn.fetchrow(
             """
-            INSERT INTO messages (customer_id, channel, body, direction)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO messages (customer_id, channel, body, direction, thread_id)
+            VALUES ($1, $2, $3, $4, $5)
             RETURNING id
             """,
             customer_id,
             channel,
             body,
             direction,
+            thread_id,
         )
         return row["id"]
+
+
+async def is_known_thread(thread_id: str) -> bool:
+    """Return True if we have any message (inbound or outbound) in this Gmail thread."""
+    async with acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT 1 FROM messages WHERE thread_id = $1 LIMIT 1",
+            thread_id,
+        )
+        return row is not None
 
 
 # ---------------------------------------------------------------------------

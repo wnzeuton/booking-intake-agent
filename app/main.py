@@ -61,8 +61,13 @@ ALLOWED_SUBJECTS = {"test appointment"}  # lowercase — add more as needed
 async def _process_email_message(msg: dict):
     """Background task: run the agent on a single inbound email message."""
     subject = msg.get("subject", "").strip().lower()
-    if subject not in ALLOWED_SUBJECTS:
-        log.info("email_skipped_subject", subject=msg.get("subject", ""))
+    thread_id = msg.get("thread_id")
+
+    # Let through: subject matches the allowlist, OR it's a reply in a thread
+    # we've already been part of (e.g. customer replying to our clarification email).
+    in_known_thread = thread_id and await db.is_known_thread(thread_id)
+    if subject not in ALLOWED_SUBJECTS and not in_known_thread:
+        log.info("email_skipped", subject=msg.get("subject", ""), thread_id=thread_id)
         return
 
     sender = msg.get("sender", "")
@@ -75,8 +80,10 @@ async def _process_email_message(msg: dict):
         customer_id=None,
         channel="email",
         body=msg["body"],
+        thread_id=thread_id,
     )
-    log.info("email_received", sender=sender_email, msg_id=msg_id)
+    log.info("email_received", sender=sender_email, subject=subject,
+             thread_id=thread_id, known_thread=bool(in_known_thread), msg_id=msg_id)
 
     result = await run_intake(
         message_body=msg["body"],

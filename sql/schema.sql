@@ -34,8 +34,11 @@ CREATE TABLE IF NOT EXISTS messages (
     channel     VARCHAR(20) NOT NULL,   -- 'email' | 'form'
     body        TEXT NOT NULL,
     direction   VARCHAR(10) DEFAULT 'inbound',  -- 'inbound' | 'outbound'
+    thread_id   VARCHAR(50),                    -- Gmail thread ID (email channel only)
     created_at  TIMESTAMP DEFAULT NOW()
 );
+
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS thread_id VARCHAR(50);
 
 CREATE TABLE IF NOT EXISTS bookings (
     id               SERIAL PRIMARY KEY,
