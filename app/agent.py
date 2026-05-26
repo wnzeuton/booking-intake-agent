@@ -208,10 +208,13 @@ Decision rules (follow in order):
 4. Never call any tool more than once.
 
 Date resolution — RESOLVE these, do NOT ask for clarification:
-- "tomorrow", "today" → offset from today's date
-- "next Wednesday", "this Friday", "next Monday" → the named weekday after today \
-  (if the named day is the same as today, take the one 7 days out)
-- "next week" with a specific day mentioned → resolve the day
+- "today", "tomorrow" → offset from today's date
+- "this [weekday]" (e.g. "this Friday") → the upcoming occurrence of that day \
+  within the current week, even if it's only 1–2 days away
+- "next [weekday]" (e.g. "next Wednesday") → that weekday in the FOLLOWING \
+  calendar week, i.e. at least 7 days from today. Never resolve "next X" to \
+  a day that is fewer than 7 days away.
+- "next week [weekday]" → same as "next [weekday]" above
 
 Date resolution — ASK for clarification (send_clarification_email):
 - No day mentioned at all: "sometime next week", "soon", "whenever you have an opening"
