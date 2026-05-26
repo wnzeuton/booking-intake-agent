@@ -1,12 +1,12 @@
 # booking-intake-agent
 
-An agentic booking intake system for a pet store. Customers book via email or a Squarespace form — this agent ingests both channels, extracts structured booking requests, and emails the owners for one-tap approval.
+An agentic booking intake system for a pet store. Customers book via email or a Squarespace form — this agent ingests both channels, extracts structured booking requests, emails the owner for one-tap approval, and writes confirmed bookings directly into the store's CRM (Gingr) via Playwright automation.
 
 ---
 
 ## The Problem
 
-Customers book through whatever channel is convenient for them: email or the website form. Everything has to be manually reconciled into Gingr (the store's booking system). This agent sits in the middle and automates that process.
+Customers book through whatever channel is convenient: email or the website form. Everything has to be manually reconciled into Gingr (the store's booking CRM). This agent sits in the middle and automates the entire flow — from raw message to confirmed CRM entry.
 
 ---
 
@@ -15,18 +15,17 @@ Customers book through whatever channel is convenient for them: email or the web
 ```
 Email (Gmail)
 Squarespace form (custom JS → POST)   →   FastAPI webhook receiver
-
-         ↓
-
-Fetch customer history from Gingr
-         ↓
-LangChain + Llama 3 agent extracts BookingRequest (Pydantic)
-         ↓
-Write to Postgres as status = pending
-         ↓
-Email owners: "New booking: Mochi, grooming, Saturday. Reply Y to confirm"
-         ↓
-Owner replies Y → status = confirmed
+                                                    ↓
+                                      Claude agent extracts BookingRequest
+                                                    ↓
+                                      Write to Postgres (status = pending)
+                                                    ↓
+                                      Email owner: "New booking: Max, grooming,
+                                      June 20. Reply Y to confirm"
+                                                    ↓
+                                      Owner replies Y → status = confirmed
+                                                    ↓
+                                      Playwright writes booking into Gingr
 ```
 
 ---
@@ -36,23 +35,22 @@ Owner replies Y → status = confirmed
 | Layer | Technology |
 |---|---|
 | Backend | FastAPI |
-| Agent | LangChain + Llama 3 (4-bit quantized via llama.cpp) |
+| Agent | LangChain + Claude API (Haiku / Sonnet) |
+| CRM automation | Playwright |
 | Database | PostgreSQL (AWS RDS) |
 | Data validation | Pydantic v2 |
-| Email ingestion | Gmail API (push notifications) |
+| Email ingestion | Gmail API (Pub/Sub push notifications) |
 | Email outbound | Gmail API (owner approval + clarifications) |
 | Form ingestion | Custom JS on Squarespace → POST |
 | Deployment | AWS EC2 + ECR |
 | CI/CD | GitHub Actions → ECR → EC2 (SSM) |
-| Local dev | Docker Compose + Ngrok + Ollama |
+| Local dev | Docker Compose + Ngrok |
 
 ---
 
 ## Database Schema
 
 ### `customers`
-Stores customer contact info and preferred communication channel.
-
 ```sql
 CREATE TABLE customers (
     id          SERIAL PRIMARY KEY,
@@ -65,15 +63,13 @@ CREATE TABLE customers (
 ```
 
 ### `pets`
-Each customer can have multiple pets. Stores service preferences to help the agent fill in missing fields.
-
 ```sql
 CREATE TABLE pets (
     id                 SERIAL PRIMARY KEY,
     customer_id        INTEGER REFERENCES customers(id),
     name               VARCHAR(100) NOT NULL,
     breed              VARCHAR(100),
-    preferred_service  VARCHAR(100),  -- e.g. 'grooming', 'boarding', 'daycare'
+    preferred_service  VARCHAR(100),
     notes              TEXT,
     created_at         TIMESTAMP DEFAULT NOW(),
     UNIQUE (customer_id, name)
@@ -81,8 +77,6 @@ CREATE TABLE pets (
 ```
 
 ### `bookings`
-Core table. Tracks the full lifecycle of a booking request from intake to confirmation.
-
 ```sql
 CREATE TABLE bookings (
     id               SERIAL PRIMARY KEY,
@@ -100,49 +94,41 @@ CREATE TABLE bookings (
 ```
 
 ### `messages`
-Raw incoming messages. Every booking is traceable back to the original message for debugging.
-
 ```sql
 CREATE TABLE messages (
     id          SERIAL PRIMARY KEY,
     customer_id INTEGER REFERENCES customers(id),
-    channel     VARCHAR(20) NOT NULL,  -- 'email' | 'form'
+    channel     VARCHAR(20) NOT NULL,
     body        TEXT NOT NULL,
-    direction   VARCHAR(10) DEFAULT 'inbound',  -- 'inbound' | 'outbound'
+    direction   VARCHAR(10) DEFAULT 'inbound',
     created_at  TIMESTAMP DEFAULT NOW()
 );
 ```
 
-### `conversations`
-Tracks active clarification threads — used when the agent needs to ask a follow-up question and wait for a reply.
-
+### `app_state`
 ```sql
-CREATE TABLE conversations (
-    id             SERIAL PRIMARY KEY,
-    customer_id    INTEGER REFERENCES customers(id),
-    booking_id     INTEGER REFERENCES bookings(id),
-    status         VARCHAR(20) DEFAULT 'open',  -- 'open' | 'resolved'
-    memory_state   JSONB,                        -- LangChain ConversationBufferMemory serialized
-    created_at     TIMESTAMP DEFAULT NOW(),
-    updated_at     TIMESTAMP DEFAULT NOW()
+CREATE TABLE app_state (
+    key        VARCHAR(100) PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW()
 );
 ```
 
 ---
 
-## Agent Logic
+## Agent
 
-The LangChain agent runs on every inbound message. It has access to the following tools:
+The LangChain agent runs on every inbound message. It uses Claude's native tool-calling API (not text-based ReAct) for reliable structured output.
 
-- `lookup_customer(phone_or_email)` — fetches customer + pet history from Gingr and local DB
-- `check_availability(date, service)` — reads existing Gingr reservations for conflicts
-- `create_draft_booking(BookingRequest)` — writes a pending booking to Postgres
-- `notify_owners(booking_id)` — emails owners with an approve/reject prompt
-- `send_clarification_email(to, customer_name, missing_field)` — one clarifying email when date is ambiguous
+**Tools:**
+- `create_draft_booking` — validates and writes a pending booking to Postgres
+- `notify_owners` — emails the owner with approve/reject prompt
+- `send_clarification_email` — one email to the customer when required fields are missing
 
-**Prompt strategy:** Customer history from Gingr is injected into the extraction prompt before the agent runs, so familiar customers with a single pet and a usual service rarely need clarification. `ConversationBufferMemory` handles multi-turn threads for new customers or ambiguous requests.
-
-**Confidence threshold:** If the agent cannot extract a `requested_date` with reasonable confidence, it sends one clarifying email to the customer rather than creating a draft with a missing field.
+**Behavior:**
+- If all fields are present → create booking, email owner
+- If `customer_name`, `pet_name`, or `requested_date` are missing → send clarification email and stop
+- Form webhook with all required fields skips the LLM entirely and writes directly to the DB
 
 ---
 
@@ -158,7 +144,7 @@ POST /webhook/reply      ← Owner replies Y/N to approve/reject booking
 
 ## Squarespace Form Ingestion
 
-No Zapier. Custom JS injected into the Squarespace page intercepts form submissions and POSTs to the FastAPI endpoint:
+No Zapier. Custom JS injected into the Squarespace page intercepts form submissions:
 
 ```javascript
 window.addEventListener("submit", async (e) => {
@@ -176,21 +162,18 @@ window.addEventListener("submit", async (e) => {
 ## Local Development
 
 ```bash
-# Copy and fill in env vars
 cp .env.example .env
-
-# Start FastAPI + Postgres
-docker-compose up
-
-# Expose local server to Gmail push webhook
-ngrok http 8000
-# Paste the ngrok URL into Gmail push config (Google Cloud Pub/Sub)
+docker-compose up       # FastAPI + Postgres
+ngrok http 8000         # expose webhooks to Gmail push
 ```
 
-For the local LLM, run Ollama and set `LLAMA_ENDPOINT=http://localhost:11434` in `.env`:
+Test the agent directly without webhooks:
 
 ```bash
-ollama run llama3
+source .venv/bin/activate
+python scripts/test_agent.py "Book grooming for Max on June 20th, I'm Will, will@example.com"
+
+# With DRY_RUN=1 set in .env, no real emails are sent
 ```
 
 ---
@@ -201,18 +184,19 @@ GitHub Actions builds and deploys on every push to `main`:
 
 1. **OIDC auth** — no long-lived AWS keys; GitHub assumes an IAM role via OIDC
 2. **ECR push** — Docker image tagged with the commit SHA
-3. **EC2 deploy** — `aws ssm send-command` pulls the new image and restarts the container (no open SSH port required)
+3. **EC2 deploy** — `aws ssm send-command` pulls the new image and restarts the container (no open SSH port)
 
 Required GitHub secrets: `AWS_DEPLOY_ROLE_ARN`, `EC2_INSTANCE_ID`
 
-Required env vars on EC2 (in `/opt/booking-intake-agent/.env`):
+Required env vars on EC2:
 
 ```
+ANTHROPIC_API_KEY
 DATABASE_URL
 GMAIL_CREDENTIALS
 OWNER_EMAIL
-GINGR_API_KEY
-LLAMA_ENDPOINT
+GINGR_USERNAME
+GINGR_PASSWORD
 ```
 
 ---
@@ -221,7 +205,7 @@ LLAMA_ENDPOINT
 
 | Resource | Details |
 |---|---|
-| EC2 t2.micro | Runs the FastAPI container |
+| EC2 t2.micro | Runs the FastAPI + Playwright container |
 | RDS db.t3.micro | Managed Postgres; private subnet, accessible only from EC2 |
 | ECR | Docker image registry |
 | CloudWatch | Application logs, agent reasoning traces, webhook hits |
@@ -238,10 +222,11 @@ LLAMA_ENDPOINT
 | RDS db.t3.micro | ~$13 |
 | ECR | ~$1 |
 | CloudWatch | ~$1 |
+| Claude API | ~$1 (Haiku, ~10k bookings/mo) |
 | Gmail API | Free |
-| Gingr API | Included in existing subscription |
+| Gingr | Included in existing subscription |
 | Squarespace | Included in existing subscription |
-| **Total** | **~$23/month** |
+| **Total** | **~$24/month** |
 
 ---
 
@@ -253,12 +238,17 @@ booking-intake-agent/
 │   ├── __init__.py
 │   ├── main.py              # FastAPI app + webhook routes
 │   ├── agent.py             # LangChain agent + tools
-│   ├── models.py            # Pydantic schemas (BookingRequest etc.)
+│   ├── models.py            # Pydantic schemas
 │   ├── db.py                # Postgres connection + queries (asyncpg)
-│   ├── gingr.py             # Gingr API client (read-only)
+│   ├── gingr.py             # Gingr API client (read-only lookups)
+│   ├── gingr_writer.py      # Playwright — writes confirmed bookings into Gingr
 │   └── email_client.py      # Gmail API send/receive helpers
 ├── sql/
 │   └── schema.sql           # DB schema (source of truth)
+├── scripts/
+│   ├── test_agent.py        # Run agent directly (no webhooks needed)
+│   ├── get_gmail_token.py   # One-time Gmail OAuth flow
+│   └── setup_gmail_watch.py # Register Gmail Pub/Sub push notifications
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml       # GitHub Actions CI/CD
