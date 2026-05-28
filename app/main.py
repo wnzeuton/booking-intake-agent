@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -56,25 +57,44 @@ async def health():
 # ---------------------------------------------------------------------------
 
 ALLOWED_SUBJECTS = {"test appointment"}  # lowercase — add more as needed
+_BOOKING_SUBJECT_RE = re.compile(r'\[Booking #(\d+)\]', re.IGNORECASE)
+
+
+def _parse_sender_email(raw: str) -> str:
+    if "<" in raw:
+        return raw.split("<")[1].rstrip(">").strip()
+    return raw.strip()
 
 
 async def _process_email_message(msg: dict):
     """Background task: run the agent on a single inbound email message."""
-    subject = msg.get("subject", "").strip().lower()
+    subject = msg.get("subject", "").strip()
     thread_id = msg.get("thread_id")
+    sender_email = _parse_sender_email(msg.get("sender", ""))
 
-    # Let through: subject matches the allowlist, OR it's a reply in a thread
-    # we've already been part of (e.g. customer replying to our clarification email).
-    in_known_thread = thread_id and await db.is_known_thread(thread_id)
-    if subject not in ALLOWED_SUBJECTS and not in_known_thread:
-        log.info("email_skipped", subject=msg.get("subject", ""), thread_id=thread_id)
+    # Owner reply: "[Booking #X] Approve? ..." sent back by the store owner.
+    # Handle before the subject filter — these never match ALLOWED_SUBJECTS.
+    booking_match = _BOOKING_SUBJECT_RE.search(subject)
+    owner_email = os.environ.get("OWNER_EMAIL", "")
+    if booking_match and sender_email.lower() == owner_email.lower():
+        booking_id = int(booking_match.group(1))
+        reply = msg.get("body", "").strip().upper()
+        if reply.startswith("Y"):
+            await db.update_booking_status(booking_id, "confirmed")
+            log.info("booking_confirmed", booking_id=booking_id)
+        elif reply.startswith("N"):
+            await db.update_booking_status(booking_id, "rejected")
+            log.info("booking_rejected", booking_id=booking_id)
+        else:
+            log.warning("owner_reply_unrecognized", booking_id=booking_id, body=reply[:50])
         return
 
-    sender = msg.get("sender", "")
-    if "<" in sender:
-        sender_email = sender.split("<")[1].rstrip(">").strip()
-    else:
-        sender_email = sender.strip()
+    # Regular customer email: must match the subject allowlist or be in a known thread.
+    subject_lower = subject.lower()
+    in_known_thread = thread_id and await db.is_known_thread(thread_id)
+    if subject_lower not in ALLOWED_SUBJECTS and not in_known_thread:
+        log.info("email_skipped", subject=subject, thread_id=thread_id)
+        return
 
     msg_id = await db.insert_message(
         customer_id=None,
