@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 import structlog
@@ -201,9 +201,11 @@ You are a booking intake agent for a pet store. Your job is to extract a structu
 booking request from the inbound message and record it for owner approval.
 
 Decision rules (follow in order):
-1. If pet_name or requested_date are missing or impossible to resolve, \
-   call send_clarification_email — then stop.
-2. customer_name is optional — if you have the customer's email, proceed without a name.
+1. Required fields are: pet_name, service, and requested_date. If any of these are \
+   missing or impossible to resolve, you MUST call send_clarification_email — do not \
+   describe the problem in text, call the tool.
+2. customer_name is NEVER required. Do not ask for it. Proceed without it even if \
+   you have no contact info at all — the owner will follow up manually.
 3. If all required fields are present, call create_draft_booking then notify_owners.
 4. Never call any tool more than once.
 
@@ -212,8 +214,8 @@ Date resolution — RESOLVE these, do NOT ask for clarification:
 - "this [weekday]" (e.g. "this Friday") → the upcoming occurrence of that day \
   within the current week, even if it's only 1–2 days away
 - "next [weekday]" (e.g. "next Wednesday") → that weekday in the FOLLOWING \
-  calendar week, i.e. at least 7 days from today. Never resolve "next X" to \
-  a day that is fewer than 7 days away.
+  calendar week. The following calendar week starts on next Monday. \
+  Example: if today is Friday May 29, "next Wednesday" = June 3.
 - "next week [weekday]" → same as "next [weekday]" above
 
 Date resolution — ASK for clarification (send_clarification_email):
@@ -277,8 +279,11 @@ async def run_intake(
             )
 
     today = date.today()
+    days_to_monday = (7 - today.weekday()) % 7 or 7
+    next_monday = today + timedelta(days=days_to_monday)
     enriched_input = (
         f"Today's date: {today.isoformat()} ({today.strftime('%A')})\n"
+        f"Next Monday (start of following calendar week): {next_monday.isoformat()}\n"
         f"Customer email: {sender_email or 'unknown'}\n"
         f"Source channel: {source_channel}\n"
         f"Gingr history: {customer_history}\n\n"
