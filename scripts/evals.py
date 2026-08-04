@@ -32,8 +32,8 @@ os.environ.setdefault("OWNER_EMAIL", "test@example.com")
 os.environ.setdefault("GINGR_API_KEY", "fake")
 os.environ["DATABASE_URL"] = "postgresql://booking:booking@localhost:5432/booking"
 
-if not os.environ.get("ANTHROPIC_API_KEY"):
-    print("ERROR: ANTHROPIC_API_KEY not set in .env")
+if not os.environ.get("GEMINI_API_KEY"):
+    print("ERROR: GEMINI_API_KEY not set in .env")
     sys.exit(1)
 
 import app.agent as agent_module  # noqa: E402 — after env setup

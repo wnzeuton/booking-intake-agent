@@ -16,7 +16,7 @@ Customers book through whatever channel is convenient: email or the website form
 Email (Gmail)
 Squarespace form (custom JS → POST)   →   FastAPI webhook receiver
                                                     ↓
-                                      Claude agent extracts BookingRequest
+                                      Gemini agent extracts BookingRequest
                                                     ↓
                                       Write to Postgres (status = pending)
                                                     ↓
@@ -35,7 +35,7 @@ Squarespace form (custom JS → POST)   →   FastAPI webhook receiver
 | Layer | Technology |
 |---|---|
 | Backend | FastAPI |
-| Agent | LangChain + Claude API (Haiku / Sonnet) |
+| Agent | LangChain + Gemini API (Flash / Pro) |
 | CRM automation | Playwright |
 | Database | PostgreSQL (AWS RDS) |
 | Data validation | Pydantic v2 |
@@ -118,7 +118,7 @@ CREATE TABLE app_state (
 
 ## Agent
 
-The LangChain agent runs on every inbound message. It uses Claude's native tool-calling API (not text-based ReAct) for reliable structured output.
+The LangChain agent runs on every inbound message. It uses Gemini's native tool-calling API (not text-based ReAct) for reliable structured output.
 
 **Tools:**
 - `create_draft_booking` — validates and writes a pending booking to Postgres
@@ -191,7 +191,7 @@ Required GitHub secrets: `AWS_DEPLOY_ROLE_ARN`, `EC2_INSTANCE_ID`
 Required env vars on EC2:
 
 ```
-ANTHROPIC_API_KEY
+GEMINI_API_KEY
 DATABASE_URL
 GMAIL_CREDENTIALS
 OWNER_EMAIL
@@ -222,7 +222,7 @@ GINGR_PASSWORD
 | RDS db.t3.micro | ~$13 |
 | ECR | ~$1 |
 | CloudWatch | ~$1 |
-| Claude API | ~$1 (Haiku, ~10k bookings/mo) |
+| Gemini API | ~$1 (Flash, ~10k bookings/mo) |
 | Gmail API | Free |
 | Gingr | Included in existing subscription |
 | Squarespace | Included in existing subscription |

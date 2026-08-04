@@ -1,12 +1,12 @@
 # booking-intake-agent
 
-Agentic booking intake system for a multi-channel pet store. Ingests booking requests from email (Gmail) and a Squarespace form, extracts structured booking data via a LangChain + Claude agent, notifies owners via email for approval, and writes confirmed bookings into Gingr via Playwright browser automation.
+Agentic booking intake system for a multi-channel pet store. Ingests booking requests from email (Gmail) and a Squarespace form, extracts structured booking data via a LangChain + Gemini agent, notifies owners via email for approval, and writes confirmed bookings into Gingr via Playwright browser automation.
 
 ## Stack
 
 - **Runtime:** Python 3.11
 - **Backend:** FastAPI + Docker
-- **Agent:** LangChain + Claude API (Haiku in dev, Sonnet in prod)
+- **Agent:** LangChain + Gemini API (Flash in dev, Pro in prod)
 - **CRM automation:** Playwright — writes confirmed bookings into Gingr web UI
 - **Database:** PostgreSQL (AWS RDS, db.t3.micro)
 - **Validation:** Pydantic v2
@@ -35,7 +35,7 @@ Set `DRY_RUN=1` in `.env` to log emails instead of sending during development.
 
 Environment variables go in `.env` — never commit this file.
 
-Required: `ANTHROPIC_API_KEY`, `GMAIL_CREDENTIALS`, `DATABASE_URL`, `OWNER_EMAIL`, `GINGR_USERNAME`, `GINGR_PASSWORD`
+Required: `GEMINI_API_KEY`, `GMAIL_CREDENTIALS`, `DATABASE_URL`, `OWNER_EMAIL`, `GINGR_USERNAME`, `GINGR_PASSWORD`
 
 ## AWS Infrastructure
 
@@ -87,6 +87,6 @@ docker-compose.yml
 - If `requested_date` cannot be extracted with confidence, send one clarifying email to the customer — do not create a draft with a null or uncertain date
 - Owner approval flow is email-only: owners reply Y to confirm, N to reject
 - On Y reply: update booking status to confirmed, then trigger Playwright to write into Gingr
-- Claude Haiku is used in development; swap `model` to `claude-sonnet-4-6` for production
+- Gemini Flash (`gemini-flash-latest`) is used in development; swap `GEMINI_MODEL` to `gemini-pro-latest` for production
 - No Twilio / SMS in MVP scope
 - Set `DRY_RUN=1` to prevent real emails during local testing

@@ -17,10 +17,10 @@ from datetime import date, timedelta
 from typing import Optional
 
 import structlog
-from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain.agents import create_agent
 from langchain.tools import tool
-from langchain_anthropic import ChatAnthropic
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 import app.db as db
 import app.email_client as email_client
@@ -31,22 +31,25 @@ log = structlog.get_logger()
 
 
 # ---------------------------------------------------------------------------
-# LLM — Claude via Anthropic API
-# Defaults to Haiku (fast + cheap) for dev; set ANTHROPIC_MODEL=claude-sonnet-4-6
-# in production for better reasoning on edge cases.
+# LLM — Gemini via Google Generative AI API
+# Defaults to the "flash-latest" alias (fast + cheap, auto-tracks Google's
+# current model) for dev; set GEMINI_MODEL=gemini-pro-latest in production
+# for better reasoning on edge cases. Avoid pinning a dated model version —
+# Google retires those for new API keys (e.g. gemini-2.5-flash, 404 as of
+# July 2026).
 # ---------------------------------------------------------------------------
 
-def _get_llm() -> ChatAnthropic:
-    return ChatAnthropic(
-        model=os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
-        api_key=os.environ["ANTHROPIC_API_KEY"],
+def _get_llm() -> ChatGoogleGenerativeAI:
+    return ChatGoogleGenerativeAI(
+        model=os.environ.get("GEMINI_MODEL", "gemini-flash-latest"),
+        google_api_key=os.environ["GEMINI_API_KEY"],
         temperature=0.0,
-        max_tokens=1024,
+        max_output_tokens=1024,
     )
 
 
 # ---------------------------------------------------------------------------
-# Tools — typed parameters (Claude native tool calling; no JSON parsing needed)
+# Tools — typed parameters (Gemini native tool calling; no JSON parsing needed)
 #
 # These run inside asyncio.to_thread(), so asyncio.run() is safe here —
 # there is no event loop on the worker thread.
@@ -229,11 +232,6 @@ Field notes:
 - If the customer's email is unknown, pass an empty string for customer_email.
 """
 
-PROMPT = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
-    ("human", "{input}"),
-    MessagesPlaceholder("agent_scratchpad"),
-])
 
 
 # ---------------------------------------------------------------------------
@@ -291,23 +289,18 @@ async def run_intake(
     )
 
     llm = _get_llm()
-    agent = create_tool_calling_agent(llm=llm, tools=TOOLS, prompt=PROMPT)
-    executor = AgentExecutor(
-        agent=agent,
-        tools=TOOLS,
-        verbose=True,
-        max_iterations=5,
-    )
+    agent = create_agent(model=llm, tools=TOOLS, system_prompt=SYSTEM_PROMPT)
 
     try:
-        # executor.invoke() makes synchronous HTTP calls to the Anthropic API.
+        # agent.invoke() makes synchronous HTTP calls to the Gemini API.
         # Run in a thread so it never blocks the FastAPI event loop.
         result = await asyncio.to_thread(
-            executor.invoke,
-            {"input": enriched_input},
+            agent.invoke,
+            {"messages": [HumanMessage(content=enriched_input)]},
+            {"recursion_limit": 15},  # ~5 tool calls (model + tool node per step)
         )
-        output = result.get("output", "")
-        # Claude via langchain-anthropic returns content as a list of blocks
+        output = result["messages"][-1].content
+        # Some providers return content as a list of blocks
         # e.g. [{"type": "text", "text": "..."}] — flatten to a plain string.
         if isinstance(output, list):
             output = " ".join(
