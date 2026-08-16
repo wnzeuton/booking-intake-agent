@@ -93,6 +93,7 @@ def _parse_message(msg: dict) -> dict:
         "subject": headers.get("Subject", ""),
         "sender": headers.get("From", ""),
         "body": body,
+        "label_ids": msg.get("labelIds", []),
     }
 
 

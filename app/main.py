@@ -56,14 +56,31 @@ async def health():
 # POST /webhook/email  — Gmail push notification (Pub/Sub)
 # ---------------------------------------------------------------------------
 
-ALLOWED_SUBJECTS = {"test appointment"}  # lowercase — add more as needed
 _BOOKING_SUBJECT_RE = re.compile(r'\[Booking #(\d+)\]', re.IGNORECASE)
+
+# Gmail's own classifier already labels bulk/marketing mail — skip it for free
+# before spending any DB lookups or LLM tokens on it.
+GMAIL_SKIP_LABELS = {"SPAM", "CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS"}
+
+# Booking-intent words. Only checked for senders we don't already recognize
+# (see _process_email_message) — a known customer's message always passes,
+# so casual phrasing like "can you get Max in Wednesday?" isn't penalized.
+BOOKING_KEYWORDS = {
+    "book", "booking", "appointment", "grooming", "groom", "board", "boarding",
+    "daycare", "day care", "walk", "sit", "sitting", "drop off", "drop-off",
+    "pick up", "pick-up", "reservation", "reserve", "schedule", "pet", "dog", "cat",
+}
 
 
 def _parse_sender_email(raw: str) -> str:
     if "<" in raw:
         return raw.split("<")[1].rstrip(">").strip()
     return raw.strip()
+
+
+def _looks_like_booking_request(subject: str, body: str) -> bool:
+    text = f"{subject} {body}".lower()
+    return any(kw in text for kw in BOOKING_KEYWORDS)
 
 
 async def _process_email_message(msg: dict):
@@ -73,7 +90,7 @@ async def _process_email_message(msg: dict):
     sender_email = _parse_sender_email(msg.get("sender", ""))
 
     # Owner reply: "[Booking #X] Approve? ..." sent back by the store owner.
-    # Handle before the subject filter — these never match ALLOWED_SUBJECTS.
+    # Handle before the spam/booking filter below — these wouldn't pass it.
     booking_match = _BOOKING_SUBJECT_RE.search(subject)
     owner_email = os.environ.get("OWNER_EMAIL", "")
     if booking_match and sender_email.lower() == owner_email.lower():
@@ -89,11 +106,18 @@ async def _process_email_message(msg: dict):
             log.warning("owner_reply_unrecognized", booking_id=booking_id, body=reply[:50])
         return
 
-    # Regular customer email: must match the subject allowlist or be in a known thread.
-    subject_lower = subject.lower()
+    # Regular customer email — filter out spam/marketing before spending any LLM tokens.
+    labels = set(msg.get("label_ids") or [])
+    skip_labels = labels & GMAIL_SKIP_LABELS
+    if skip_labels:
+        log.info("email_skipped_label", subject=subject, labels=sorted(skip_labels))
+        return
+
     in_known_thread = thread_id and await db.is_known_thread(thread_id)
-    if subject_lower not in ALLOWED_SUBJECTS and not in_known_thread:
-        log.info("email_skipped", subject=subject, thread_id=thread_id)
+    known_customer = sender_email and await db.is_known_customer(sender_email)
+    recognized_sender = bool(in_known_thread or known_customer)
+    if not recognized_sender and not _looks_like_booking_request(subject, msg.get("body", "")):
+        log.info("email_skipped_not_booking", subject=subject, sender=sender_email)
         return
 
     msg_id = await db.insert_message(
