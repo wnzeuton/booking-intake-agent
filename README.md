@@ -16,7 +16,7 @@ Customers book through whatever channel is convenient: email or the website form
 Email (Gmail)
 Squarespace form (custom JS → POST)   →   FastAPI webhook receiver
                                                     ↓
-                                      Gemini agent extracts BookingRequest
+                                      Groq agent extracts BookingRequest
                                                     ↓
                                       Write to Postgres (status = pending)
                                                     ↓
@@ -35,7 +35,7 @@ Squarespace form (custom JS → POST)   →   FastAPI webhook receiver
 | Layer | Technology |
 |---|---|
 | Backend | FastAPI |
-| Agent | LangChain + Gemini API (Flash / Pro) |
+| Agent | LangChain + Groq API (free tier) |
 | CRM automation | Playwright |
 | Database | PostgreSQL (AWS RDS) |
 | Data validation | Pydantic v2 |
@@ -118,7 +118,7 @@ CREATE TABLE app_state (
 
 ## Agent
 
-The LangChain agent runs on every inbound message. It uses Gemini's native tool-calling API (not text-based ReAct) for reliable structured output.
+The LangChain agent runs on every inbound message. It uses Groq's native tool-calling API (not text-based ReAct) for reliable structured output.
 
 **Tools:**
 - `create_draft_booking` — validates and writes a pending booking to Postgres
@@ -176,6 +176,13 @@ python scripts/test_agent.py "Book grooming for Max on June 20th, I'm Will, will
 # With DRY_RUN=1 set in .env, no real emails are sent
 ```
 
+Run the eval suite (tool selection + field extraction, all side effects patched out):
+
+```bash
+python scripts/evals.py --quick   # ~35-case subset — use while iterating, fits one day's Groq free-tier budget
+python scripts/evals.py           # full 104-case suite — run before merging or when changing GROQ_MODEL
+```
+
 ---
 
 ## Deployment (AWS)
@@ -191,7 +198,7 @@ Required GitHub secrets: `AWS_DEPLOY_ROLE_ARN`, `EC2_INSTANCE_ID`
 Required env vars on EC2:
 
 ```
-GEMINI_API_KEY
+GROQ_API_KEY
 DATABASE_URL
 GMAIL_CREDENTIALS
 OWNER_EMAIL
@@ -222,11 +229,11 @@ GINGR_PASSWORD
 | RDS db.t3.micro | ~$13 |
 | ECR | ~$1 |
 | CloudWatch | ~$1 |
-| Gemini API | ~$1 (Flash, ~10k bookings/mo) |
+| Groq API | Free (free tier, no paid usage) |
 | Gmail API | Free |
 | Gingr | Included in existing subscription |
 | Squarespace | Included in existing subscription |
-| **Total** | **~$24/month** |
+| **Total** | **~$23/month** |
 
 ---
 
@@ -247,6 +254,7 @@ booking-intake-agent/
 │   └── schema.sql           # DB schema (source of truth)
 ├── scripts/
 │   ├── test_agent.py        # Run agent directly (no webhooks needed)
+│   ├── evals.py             # Eval suite (--quick for a fast subset, full run for merges/model changes)
 │   ├── get_gmail_token.py   # One-time Gmail OAuth flow
 │   └── setup_gmail_watch.py # Register Gmail Pub/Sub push notifications
 ├── .github/

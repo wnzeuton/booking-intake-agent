@@ -20,7 +20,7 @@ import structlog
 from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_core.messages import HumanMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 
 import app.db as db
 import app.email_client as email_client
@@ -31,25 +31,24 @@ log = structlog.get_logger()
 
 
 # ---------------------------------------------------------------------------
-# LLM — Gemini via Google Generative AI API
-# Defaults to the "flash-latest" alias (fast + cheap, auto-tracks Google's
-# current model) for dev; set GEMINI_MODEL=gemini-pro-latest in production
-# for better reasoning on edge cases. Avoid pinning a dated model version —
-# Google retires those for new API keys (e.g. gemini-2.5-flash, 404 as of
-# July 2026).
+# LLM — Groq (OpenAI-compatible chat completions API)
+# Groq model ids are fixed/versioned, not "-latest" aliases — no auto-tracking
+# behavior like Gemini's flash-latest, but a model can be deprecated and need
+# a manual bump. Default below is the winner of the eval-suite comparison
+# across candidates (see scripts/evals.py --model); override with GROQ_MODEL.
 # ---------------------------------------------------------------------------
 
-def _get_llm() -> ChatGoogleGenerativeAI:
-    return ChatGoogleGenerativeAI(
-        model=os.environ.get("GEMINI_MODEL", "gemini-flash-latest"),
-        google_api_key=os.environ["GEMINI_API_KEY"],
+def _get_llm() -> ChatGroq:
+    return ChatGroq(
+        model=os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
+        api_key=os.environ["GROQ_API_KEY"],
         temperature=0.0,
-        max_output_tokens=1024,
+        max_tokens=1024,  # Groq/OpenAI-compatible param name — NOT max_output_tokens
     )
 
 
 # ---------------------------------------------------------------------------
-# Tools — typed parameters (Gemini native tool calling; no JSON parsing needed)
+# Tools — typed parameters (Groq native tool calling; no JSON parsing needed)
 #
 # These run inside asyncio.to_thread(), so asyncio.run() is safe here —
 # there is no event loop on the worker thread.
@@ -220,6 +219,10 @@ Date resolution — RESOLVE these, do NOT ask for clarification:
   calendar week. The following calendar week starts on next Monday. \
   Example: if today is Friday May 29, "next Wednesday" = June 3.
 - "next week [weekday]" → same as "next [weekday]" above
+- A bare month/day with no year (e.g. "June 20th", "the 3rd of March") whose date has \
+  ALREADY PASSED this year relative to today's date → resolve it to that same month/day \
+  in the FOLLOWING year. Do not ask for clarification. \
+  Example: if today is August 15, 2026, "June 20th" → 2027-06-20.
 
 Date resolution — ASK for clarification (send_clarification_email):
 - No day mentioned at all: "sometime next week", "soon", "whenever you have an opening"
@@ -292,7 +295,7 @@ async def run_intake(
     agent = create_agent(model=llm, tools=TOOLS, system_prompt=SYSTEM_PROMPT)
 
     try:
-        # agent.invoke() makes synchronous HTTP calls to the Gemini API.
+        # agent.invoke() makes synchronous HTTP calls to the Groq API.
         # Run in a thread so it never blocks the FastAPI event loop.
         result = await asyncio.to_thread(
             agent.invoke,

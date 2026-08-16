@@ -17,14 +17,14 @@ from pathlib import Path
 # Make sure the project root is on the path regardless of where this is run from
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Load .env so LLAMA_ENDPOINT etc. are available
+# Load .env so GROQ_API_KEY etc. are available
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 os.environ["DRY_RUN"] = "1"  # never send real emails during agent testing
-# GEMINI_API_KEY is loaded from .env above; verify it was set
-if not os.environ.get("GEMINI_API_KEY"):
-    print("ERROR: GEMINI_API_KEY not set in .env")
+# GROQ_API_KEY is loaded from .env above; verify it was set
+if not os.environ.get("GROQ_API_KEY"):
+    print("ERROR: GROQ_API_KEY not set in .env")
     sys.exit(1)
 os.environ.setdefault("OWNER_EMAIL", "test@example.com")
 os.environ.setdefault("GINGR_API_KEY", "fake")
