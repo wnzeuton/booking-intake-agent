@@ -88,6 +88,11 @@ docker-compose.yml
 - Booking status values: `pending`, `confirmed`, `rejected` — no other values
 - Source channel values: `email`, `form` — no other values for MVP
 
+## Git Workflow
+
+- Branch naming: `feature/<desc>` for new functionality, `fix/<desc>` for bug fixes
+- Work on a branch in a git worktree, not directly on `main` — use worktrees for any non-trivial change
+
 ## Key Constraints
 
 - Gingr API is read-only — all writes go through Playwright (`gingr_writer.py`)
