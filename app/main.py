@@ -58,6 +58,9 @@ async def health():
 
 _BOOKING_SUBJECT_RE = re.compile(r'\[Booking #(\d+)\]', re.IGNORECASE)
 
+# When TEST_MODE=1, only this exact subject is processed — see _process_email_message.
+TEST_MODE_SUBJECT = "test appointment"
+
 # Gmail's own classifier already labels bulk/marketing mail — skip it for free
 # before spending any DB lookups or LLM tokens on it.
 GMAIL_SKIP_LABELS = {"SPAM", "CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS"}
@@ -106,19 +109,28 @@ async def _process_email_message(msg: dict):
             log.warning("owner_reply_unrecognized", booking_id=booking_id, body=reply[:50])
         return
 
-    # Regular customer email — filter out spam/marketing before spending any LLM tokens.
-    labels = set(msg.get("label_ids") or [])
-    skip_labels = labels & GMAIL_SKIP_LABELS
-    if skip_labels:
-        log.info("email_skipped_label", subject=subject, labels=sorted(skip_labels))
-        return
+    # TEST_MODE: for local dev against a real Gmail inbox (e.g. via ngrok), where
+    # the spam/booking filter below would otherwise let real inbox mail reach the
+    # agent. When set, ONLY this exact subject is processed — everything else,
+    # including mail that would normally pass the filter, is skipped.
+    if os.environ.get("TEST_MODE"):
+        if subject.lower() != TEST_MODE_SUBJECT:
+            log.info("email_skipped_test_mode", subject=subject)
+            return
+    else:
+        # Regular customer email — filter out spam/marketing before spending any LLM tokens.
+        labels = set(msg.get("label_ids") or [])
+        skip_labels = labels & GMAIL_SKIP_LABELS
+        if skip_labels:
+            log.info("email_skipped_label", subject=subject, labels=sorted(skip_labels))
+            return
 
-    in_known_thread = thread_id and await db.is_known_thread(thread_id)
-    known_customer = sender_email and await db.is_known_customer(sender_email)
-    recognized_sender = bool(in_known_thread or known_customer)
-    if not recognized_sender and not _looks_like_booking_request(subject, msg.get("body", "")):
-        log.info("email_skipped_not_booking", subject=subject, sender=sender_email)
-        return
+        in_known_thread = thread_id and await db.is_known_thread(thread_id)
+        known_customer = sender_email and await db.is_known_customer(sender_email)
+        recognized_sender = bool(in_known_thread or known_customer)
+        if not recognized_sender and not _looks_like_booking_request(subject, msg.get("body", "")):
+            log.info("email_skipped_not_booking", subject=subject, sender=sender_email)
+            return
 
     msg_id = await db.insert_message(
         customer_id=None,
@@ -127,7 +139,7 @@ async def _process_email_message(msg: dict):
         thread_id=thread_id,
     )
     log.info("email_received", sender=sender_email, subject=subject,
-             thread_id=thread_id, known_thread=bool(in_known_thread), msg_id=msg_id)
+             thread_id=thread_id, msg_id=msg_id)
 
     result = await run_intake(
         message_body=msg["body"],
