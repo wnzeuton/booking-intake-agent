@@ -154,6 +154,16 @@ async def is_known_thread(thread_id: str) -> bool:
         return row is not None
 
 
+async def is_known_customer(email: str) -> bool:
+    """Return True if this email address already exists in the customers table."""
+    async with acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT 1 FROM customers WHERE email = $1 LIMIT 1",
+            email,
+        )
+        return row is not None
+
+
 # ---------------------------------------------------------------------------
 # Customers
 # ---------------------------------------------------------------------------

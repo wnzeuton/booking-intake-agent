@@ -56,14 +56,34 @@ async def health():
 # POST /webhook/email  — Gmail push notification (Pub/Sub)
 # ---------------------------------------------------------------------------
 
-ALLOWED_SUBJECTS = {"test appointment"}  # lowercase — add more as needed
 _BOOKING_SUBJECT_RE = re.compile(r'\[Booking #(\d+)\]', re.IGNORECASE)
+
+# When TEST_MODE=1, only this exact subject is processed — see _process_email_message.
+TEST_MODE_SUBJECT = "test appointment"
+
+# Gmail's own classifier already labels bulk/marketing mail — skip it for free
+# before spending any DB lookups or LLM tokens on it.
+GMAIL_SKIP_LABELS = {"SPAM", "CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS"}
+
+# Booking-intent words. Only checked for senders we don't already recognize
+# (see _process_email_message) — a known customer's message always passes,
+# so casual phrasing like "can you get Max in Wednesday?" isn't penalized.
+BOOKING_KEYWORDS = {
+    "book", "booking", "appointment", "grooming", "groom", "board", "boarding",
+    "daycare", "day care", "walk", "sit", "sitting", "drop off", "drop-off",
+    "pick up", "pick-up", "reservation", "reserve", "schedule", "pet", "dog", "cat",
+}
 
 
 def _parse_sender_email(raw: str) -> str:
     if "<" in raw:
         return raw.split("<")[1].rstrip(">").strip()
     return raw.strip()
+
+
+def _looks_like_booking_request(subject: str, body: str) -> bool:
+    text = f"{subject} {body}".lower()
+    return any(kw in text for kw in BOOKING_KEYWORDS)
 
 
 async def _process_email_message(msg: dict):
@@ -73,7 +93,7 @@ async def _process_email_message(msg: dict):
     sender_email = _parse_sender_email(msg.get("sender", ""))
 
     # Owner reply: "[Booking #X] Approve? ..." sent back by the store owner.
-    # Handle before the subject filter — these never match ALLOWED_SUBJECTS.
+    # Handle before the spam/booking filter below — these wouldn't pass it.
     booking_match = _BOOKING_SUBJECT_RE.search(subject)
     owner_email = os.environ.get("OWNER_EMAIL", "")
     if booking_match and sender_email.lower() == owner_email.lower():
@@ -89,12 +109,28 @@ async def _process_email_message(msg: dict):
             log.warning("owner_reply_unrecognized", booking_id=booking_id, body=reply[:50])
         return
 
-    # Regular customer email: must match the subject allowlist or be in a known thread.
-    subject_lower = subject.lower()
-    in_known_thread = thread_id and await db.is_known_thread(thread_id)
-    if subject_lower not in ALLOWED_SUBJECTS and not in_known_thread:
-        log.info("email_skipped", subject=subject, thread_id=thread_id)
-        return
+    # TEST_MODE: for local dev against a real Gmail inbox (e.g. via ngrok), where
+    # the spam/booking filter below would otherwise let real inbox mail reach the
+    # agent. When set, ONLY this exact subject is processed — everything else,
+    # including mail that would normally pass the filter, is skipped.
+    if os.environ.get("TEST_MODE"):
+        if subject.lower() != TEST_MODE_SUBJECT:
+            log.info("email_skipped_test_mode", subject=subject)
+            return
+    else:
+        # Regular customer email — filter out spam/marketing before spending any LLM tokens.
+        labels = set(msg.get("label_ids") or [])
+        skip_labels = labels & GMAIL_SKIP_LABELS
+        if skip_labels:
+            log.info("email_skipped_label", subject=subject, labels=sorted(skip_labels))
+            return
+
+        in_known_thread = thread_id and await db.is_known_thread(thread_id)
+        known_customer = sender_email and await db.is_known_customer(sender_email)
+        recognized_sender = bool(in_known_thread or known_customer)
+        if not recognized_sender and not _looks_like_booking_request(subject, msg.get("body", "")):
+            log.info("email_skipped_not_booking", subject=subject, sender=sender_email)
+            return
 
     msg_id = await db.insert_message(
         customer_id=None,
@@ -103,7 +139,7 @@ async def _process_email_message(msg: dict):
         thread_id=thread_id,
     )
     log.info("email_received", sender=sender_email, subject=subject,
-             thread_id=thread_id, known_thread=bool(in_known_thread), msg_id=msg_id)
+             thread_id=thread_id, msg_id=msg_id)
 
     result = await run_intake(
         message_body=msg["body"],
